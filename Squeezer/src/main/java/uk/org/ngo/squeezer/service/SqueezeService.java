@@ -27,6 +27,9 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.MediaMetadata;
+import android.media.session.MediaSession;
+import android.media.session.MediaSessionManager;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Binder;
@@ -187,6 +190,9 @@ public class SqueezeService extends Service implements ServiceCallbackList.Servi
     private static final String ACTION_PAUSE = "uk.org.ngo.squeezer.service.ACTION_PAUSE";
     private static final String ACTION_CLOSE = "uk.org.ngo.squeezer.service.ACTION_CLOSE";
 
+    private MediaSessionManager mManager;
+    private MediaSession mSession;
+
     /**
      * Thrown when the service is asked to send a command to the server before the server
      * handshake completes.
@@ -201,6 +207,11 @@ public class SqueezeService extends Service implements ServiceCallbackList.Servi
     @Override
     public void onCreate() {
         super.onCreate();
+
+
+        mManager = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
+
+
 
         // Get the main thread
         mainThread = Thread.currentThread();
@@ -250,7 +261,14 @@ public class SqueezeService extends Service implements ServiceCallbackList.Servi
 
     @Override
     public IBinder onBind(Intent intent) {
+        mSession = new MediaSession(getApplicationContext(), "squeezer");
         return (IBinder) squeezeService;
+    }
+
+    @Override
+    public boolean onUnbind(Intent intent) {
+        mSession.release();
+        return super.onUnbind(intent);
     }
 
     @Override
@@ -1008,9 +1026,6 @@ public class SqueezeService extends Service implements ServiceCallbackList.Servi
         PendingIntent pausePendingIntent = getPendingIntent(ACTION_PAUSE);
         PendingIntent closePendingIntent = getPendingIntent(ACTION_CLOSE);
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this);
-        builder.setOngoing(true);
-
         Bitmap x = null;
         try {
             HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
@@ -1022,54 +1037,43 @@ public class SqueezeService extends Service implements ServiceCallbackList.Servi
             x = BitmapFactory.decodeStream(input);
         } catch (Exception e){}
 
-        RemoteViews smallView = new RemoteViews(this.getPackageName(), R.layout.notification_player_small);
-        smallView.setImageViewBitmap(R.id.logo, x);
-        smallView.setOnClickPendingIntent(R.id.previous, prevPendingIntent);
-        smallView.setOnClickPendingIntent(R.id.next, nextPendingIntent);
-        smallView.setOnClickPendingIntent(R.id.play, playPendingIntent);
-        smallView.setOnClickPendingIntent(R.id.pause, pausePendingIntent);
-
-        RemoteViews largeView = new RemoteViews(this.getPackageName(), R.layout.notification_player_large);
-        largeView.setImageViewBitmap(R.id.logo, x);
-        largeView.setOnClickPendingIntent(R.id.previous, prevPendingIntent);
-        largeView.setOnClickPendingIntent(R.id.next, nextPendingIntent);
-        largeView.setOnClickPendingIntent(R.id.play, playPendingIntent);
-        largeView.setOnClickPendingIntent(R.id.pause, pausePendingIntent);
-
-        builder.setContent(smallView);
-
         Intent showNowPlaying = new Intent(this, NowPlayingActivity.class)
                 .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
         PendingIntent pIntent = PendingIntent.getActivity(this, 0, showNowPlaying, 0);
+
+        Notification.Builder builder = new Notification.Builder(this);
+        builder.setContentIntent(pIntent)
+                .setSmallIcon(R.drawable.squeezer_notification)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setShowWhen(false)
+                .setContentTitle(songName)
+                .setContentText(artistName)
+                .setSubText(albumName)
+                .setLargeIcon(x)
+                .setStyle(new Notification.MediaStyle().setShowActionsInCompactView(1, 2).setMediaSession(mSession.getSessionToken()));
+
+        MediaMetadata.Builder metaBuilder = new MediaMetadata.Builder();
+        metaBuilder.putString(MediaMetadata.METADATA_KEY_ARTIST, artistName);
+        metaBuilder.putString(MediaMetadata.METADATA_KEY_ALBUM, albumName);
+        metaBuilder.putString(MediaMetadata.METADATA_KEY_TITLE, songName);
+        metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, x);
+        metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ART, x);
+        mSession.setMetadata(metaBuilder.build());
+
         if (playing) {
-            largeView.setViewVisibility(R.id.play, View.GONE);
-            largeView.setViewVisibility(R.id.pause, View.VISIBLE);
-            smallView.setViewVisibility(R.id.play, View.GONE);
-            smallView.setViewVisibility(R.id.pause, View.VISIBLE);
-            smallView.setTextViewText(R.id.notification_song_name, songName);
-            smallView.setTextViewText(R.id.notification_artist_name, artistName);
-            smallView.setTextViewText(R.id.notification_player_name, playerName);
-            largeView.setTextViewText(R.id.notification_song_name, songName);
-            largeView.setTextViewText(R.id.notification_artist_name, artistName);
-            largeView.setTextViewText(R.id.notification_album_name, albumName);
-            largeView.setTextViewText(R.id.notification_player_name, playerName);
-            builder.setContentTitle(getString(R.string.notification_playing_text, playerName));
-            builder.setContentText(songName);
-            builder.setContentIntent(pIntent);
-            builder.setSmallIcon(R.drawable.squeezer_notification);
+            builder.setOngoing(true)
+                    .addAction(new Notification.Action(R.drawable.ic_action_previous, "Previous", prevPendingIntent))
+                    .addAction(new Notification.Action(R.drawable.ic_action_pause, "Pause", pausePendingIntent))
+                    .addAction(new Notification.Action(R.drawable.ic_action_next, "Next", nextPendingIntent));
         } else {
-            largeView.setViewVisibility(R.id.play, View.VISIBLE);
-            largeView.setViewVisibility(R.id.pause, View.GONE);
-            smallView.setViewVisibility(R.id.play, View.VISIBLE);
-            smallView.setViewVisibility(R.id.pause, View.GONE);
-            builder.setContentTitle(getString(R.string.notification_playing_text, playerName));
-            builder.setContentText("-");
-            builder.setContentIntent(pIntent);
-            builder.setSmallIcon(R.drawable.squeezer_notification);
+            builder.setOngoing(false)
+                    .setDeleteIntent(closePendingIntent)
+                    .addAction(new Notification.Action(R.drawable.ic_action_previous, "Previous", prevPendingIntent))
+                    .addAction(new Notification.Action(R.drawable.ic_action_play, "Play", playPendingIntent))
+                    .addAction(new Notification.Action(R.drawable.ic_action_next, "Next", nextPendingIntent));
         }
 
         Notification notification = builder.build();
-        notification.bigContentView = largeView;
 
         nm.notify(PLAYBACKSERVICE_STATUS, notification);
     }
